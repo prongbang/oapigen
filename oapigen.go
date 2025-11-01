@@ -17,11 +17,11 @@ import (
 	"sync"
 )
 
-type ObserveMode uint8
+type ObsMode uint8
 
 const (
-	ObserveDisabled ObserveMode = 0
-	ObserveEnabled  ObserveMode = 1
+	ObsDisable ObsMode = 0
+	ObsEnable  ObsMode = 1
 )
 
 const (
@@ -39,7 +39,7 @@ type Config struct {
 	JSONPath       string // ex: "/openapi.json"
 	DocsPath       string // ex: "/docs"
 	SpecFile       string // ex: "openapi.json"
-	Observe        ObserveMode
+	Observe        ObsMode
 	RoutesProvider func() []Route // optional provider for static routes
 }
 
@@ -63,12 +63,12 @@ type CaptureContext struct {
 }
 
 type Middleware struct {
-	cfg Config
+	Cfg Config
 
 	// in-memory spec (thread-safe)
-	mu       sync.RWMutex
 	spec     map[string]any
-	specJSON []byte
+	Mu       sync.RWMutex
+	SpecJSON []byte
 
 	// observation by route/method
 	obsMu sync.Mutex
@@ -150,14 +150,16 @@ func New(cfgs ...Config) *Middleware {
 		cfg.SpecFile = "/docs/openapi.json"
 	}
 	m := &Middleware{
-		cfg: cfg,
+		Cfg: cfg,
 		obs: make(map[string]*observed),
 	}
-	m.setRoutesProvider(cfg.RoutesProvider)
+	m.SetRoutesProvider(cfg.RoutesProvider)
 	return m
 }
 
-func (m *Middleware) setRoutesProvider(fn func() []Route) {
+// ---------- public helpers (optional enrich) ----------
+
+func (m *Middleware) SetRoutesProvider(fn func() []Route) {
 	if fn == nil {
 		return
 	}
@@ -165,8 +167,6 @@ func (m *Middleware) setRoutesProvider(fn func() []Route) {
 		m.routesProvider = fn
 	})
 }
-
-// ---------- public helpers (optional enrich) ----------
 
 func (m *Middleware) Tag(path, method string, tags ...string) {
 	key := keyOf(method, path)
@@ -193,7 +193,7 @@ func (m *Middleware) Description(path, method, text string) {
 }
 
 func (m *Middleware) Capture(ctx CaptureContext) {
-	if m.cfg.Observe == ObserveDisabled {
+	if m.Cfg.Observe == ObsDisable {
 		return
 	}
 
@@ -256,22 +256,22 @@ func (m *Middleware) Capture(ctx CaptureContext) {
 	m.rebuildAndPersist()
 }
 
-// ---------- spec build/persist ----------
-
-func (m *Middleware) ensureSpecInitialized() {
-	m.mu.RLock()
+func (m *Middleware) EnsureSpecInitialized() {
+	m.Mu.RLock()
 	ok := m.spec != nil
-	m.mu.RUnlock()
+	m.Mu.RUnlock()
 	if ok {
 		return
 	}
 	m.rebuildAndPersist()
 }
 
+// ---------- spec build/persist ----------
+
 func (m *Middleware) rebuildAndPersist() {
 	// base spec (original)
 	var base map[string]any
-	if b, err := os.ReadFile(m.cfg.SpecFile); err == nil && len(b) > 0 {
+	if b, err := os.ReadFile(m.Cfg.SpecFile); err == nil && len(b) > 0 {
 		_ = json.Unmarshal(b, &base)
 	}
 	if base == nil {
@@ -289,27 +289,27 @@ func (m *Middleware) rebuildAndPersist() {
 	data, _ := json.MarshalIndent(spec, "", "  ")
 
 	// swap in-memory
-	m.mu.Lock()
-	unchanged := len(m.specJSON) > 0 && bytes.Equal(m.specJSON, data)
+	m.Mu.Lock()
+	unchanged := len(m.SpecJSON) > 0 && bytes.Equal(m.SpecJSON, data)
 	m.spec = spec
-	m.specJSON = data
-	m.mu.Unlock()
+	m.SpecJSON = data
+	m.Mu.Unlock()
 
 	if unchanged {
-		if info, err := os.Stat(m.cfg.SpecFile); err == nil && !info.IsDir() {
+		if info, err := os.Stat(m.Cfg.SpecFile); err == nil && !info.IsDir() {
 			return
 		}
 	}
 
 	// ensure dir exists
-	dir := filepath.Dir(m.cfg.SpecFile)
+	dir := filepath.Dir(m.Cfg.SpecFile)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			fmt.Printf("[fiberopenapi] mkdir %s error: %v\n", dir, err)
 		}
 	}
-	if err := os.WriteFile(m.cfg.SpecFile, data, 0o644); err != nil {
-		fmt.Printf("[fiberopenapi] write %s error: %v\n", m.cfg.SpecFile, err)
+	if err := os.WriteFile(m.Cfg.SpecFile, data, 0o644); err != nil {
+		fmt.Printf("[fiberopenapi] write %s error: %v\n", m.Cfg.SpecFile, err)
 	}
 }
 
@@ -332,7 +332,7 @@ func (m *Middleware) buildBaseSpec() map[string]any {
 		}
 		var list []kv
 		for _, r := range m.routesProvider() {
-			if r.Path == m.cfg.JSONPath || r.Path == m.cfg.DocsPath {
+			if r.Path == m.Cfg.JSONPath || r.Path == m.Cfg.DocsPath {
 				continue
 			}
 			if r.Path == "" || r.Method == "" || !allow[strings.ToUpper(r.Method)] {
@@ -375,11 +375,11 @@ func (m *Middleware) buildBaseSpec() map[string]any {
 
 func (m *Middleware) applyInfoServer(spec map[string]any) {
 	spec["info"] = map[string]any{
-		"title":   m.cfg.Title,
-		"version": m.cfg.Version,
+		"title":   m.Cfg.Title,
+		"version": m.Cfg.Version,
 	}
-	if m.cfg.ServerURL != "" {
-		spec["servers"] = []map[string]any{{"url": m.cfg.ServerURL}}
+	if m.Cfg.ServerURL != "" {
+		spec["servers"] = []map[string]any{{"url": m.Cfg.ServerURL}}
 	}
 }
 
@@ -494,6 +494,7 @@ func keyOf(method, path string) string {
 	}
 	return strings.ToUpper(method) + " " + normalize(path)
 }
+
 func splitKey(key string) (method, path string) {
 	i := strings.IndexByte(key, ' ')
 	return key[:i], key[i+1:]

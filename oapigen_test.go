@@ -222,7 +222,7 @@ func TestInferredRequiredFieldsFromObservations(t *testing.T) {
 		JSONPath: "/openapi.json",
 		DocsPath: "/docs",
 		SpecFile: specPath,
-		Observe:  ObserveEnabled,
+		Observe:  ObsEnable,
 	})
 
 	baseCtx := CaptureContext{
@@ -245,9 +245,9 @@ func TestInferredRequiredFieldsFromObservations(t *testing.T) {
 	third.RequestBody = []byte(`{"name":"carol"}`)
 	m.Capture(third)
 
-	m.mu.RLock()
+	m.Mu.RLock()
 	spec := m.spec
-	m.mu.RUnlock()
+	m.Mu.RUnlock()
 
 	paths, ok := spec["paths"].(map[string]any)
 	if !ok {
@@ -299,7 +299,7 @@ func TestCaptureStoresObservation(t *testing.T) {
 		JSONPath: "/openapi.json",
 		DocsPath: "/docs",
 		SpecFile: specPath,
-		Observe:  ObserveEnabled,
+		Observe:  ObsEnable,
 	})
 
 	m.Capture(CaptureContext{
