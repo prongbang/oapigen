@@ -289,6 +289,102 @@ func TestInferredRequiredFieldsFromObservations(t *testing.T) {
 	}
 }
 
+func TestNullFieldsRetainedInSchemaAndExample(t *testing.T) {
+	body := []byte(`{"name":"alice","nullBool":null,"nullFloat":null,"nullInt":null,"nullString":null}`)
+	sample := payloadSampleFrom(body, "application/json")
+	if sample == nil {
+		t.Fatalf("expected payload sample")
+	}
+
+	captures := map[string]*contentCapture{}
+	addContentSample(captures, sample)
+
+	cap, ok := captures["application/json"]
+	if !ok || cap == nil {
+		t.Fatalf("content capture missing for application/json")
+	}
+
+	obj := buildContentObject(cap)
+	schema, ok := obj["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing from content object: %#v", obj)
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil {
+		t.Fatalf("properties missing from schema: %#v", schema)
+	}
+	for _, name := range []string{"nullBool", "nullFloat", "nullInt", "nullString"} {
+		if _, found := props[name]; !found {
+			t.Fatalf("expected schema to include %q property: %#v", name, props)
+		}
+	}
+
+	example, ok := obj["example"].(map[string]any)
+	if !ok {
+		t.Fatalf("example missing or wrong type: %#v", obj["example"])
+	}
+	if _, ok := example["name"]; !ok {
+		t.Fatalf("expected example to retain non-null field 'name': %#v", example)
+	}
+	for _, name := range []string{"nullBool", "nullFloat", "nullInt", "nullString"} {
+		val, found := example[name]
+		if !found || val != nil {
+			t.Fatalf("expected example to retain %q as null, got %#v", name, example[name])
+		}
+	}
+}
+
+func TestCaptureSkipsExcludedMethod(t *testing.T) {
+	tmpDir := t.TempDir()
+	specPath := filepath.Join(tmpDir, "openapi.json")
+
+	m := New(Config{
+		SpecFile:      specPath,
+		Observe:       ObsEnable,
+		ExcludeMethod: []string{"OPTIONS"},
+	})
+
+	m.Capture(CaptureContext{
+		Method:              "OPTIONS",
+		Path:                "/skip",
+		RoutePattern:        "/skip",
+		Status:              http.StatusOK,
+		ResponseBody:        []byte(`{"ok":true}`),
+		ResponseContentType: "application/json",
+	})
+
+	m.obsMu.Lock()
+	defer m.obsMu.Unlock()
+	if len(m.obs) != 0 {
+		t.Fatalf("expected no observations for excluded method, got %v", m.obs)
+	}
+}
+
+func TestBuildBaseSpecSkipsExcludedMethods(t *testing.T) {
+	m := New(Config{
+		ExcludeMethod: []string{"options"},
+		RoutesProvider: func() []Route {
+			return []Route{
+				{Method: "GET", Path: "/users"},
+				{Method: "OPTIONS", Path: "/users"},
+			}
+		},
+	})
+
+	spec := m.buildBaseSpec()
+	paths := spec["paths"].(map[string]any)
+	pathItem, ok := paths["/users"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected /users path in spec, got %#v", paths)
+	}
+	if _, ok := pathItem["get"]; !ok {
+		t.Fatalf("expected GET method to remain: %#v", pathItem)
+	}
+	if _, ok := pathItem["options"]; ok {
+		t.Fatalf("expected OPTIONS method to be excluded: %#v", pathItem)
+	}
+}
+
 func TestCaptureStoresObservation(t *testing.T) {
 	tmpDir := t.TempDir()
 	specPath := filepath.Join(tmpDir, "openapi.json")

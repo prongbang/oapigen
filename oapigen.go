@@ -40,6 +40,7 @@ type Config struct {
 	DocsPath       string // ex: "/docs"
 	SpecFile       string // ex: "openapi.json"
 	Observe        ObsMode
+	ExcludeMethod  []string
 	RoutesProvider func() []Route // optional provider for static routes
 }
 
@@ -73,6 +74,8 @@ type Middleware struct {
 	// observation by route/method
 	obsMu sync.Mutex
 	obs   map[string]*observed // key = METHOD+" "+normalizedPath
+
+	excludeMethod map[string]bool
 
 	routesOnce     sync.Once
 	routesProvider func() []Route
@@ -149,9 +152,16 @@ func New(cfgs ...Config) *Middleware {
 	if cfg.SpecFile == "" {
 		cfg.SpecFile = "/docs/openapi.json"
 	}
+	exclude := map[string]bool{}
+	for _, mth := range cfg.ExcludeMethod {
+		if nm := strings.ToUpper(strings.TrimSpace(mth)); nm != "" {
+			exclude[nm] = true
+		}
+	}
 	m := &Middleware{
-		Cfg: cfg,
-		obs: make(map[string]*observed),
+		Cfg:           cfg,
+		obs:           make(map[string]*observed),
+		excludeMethod: exclude,
 	}
 	m.SetRoutesProvider(cfg.RoutesProvider)
 	return m
@@ -199,6 +209,9 @@ func (m *Middleware) Capture(ctx CaptureContext) {
 
 	method := strings.ToUpper(strings.TrimSpace(ctx.Method))
 	if method == "" {
+		return
+	}
+	if m.isMethodExcluded(method) {
 		return
 	}
 
@@ -335,7 +348,11 @@ func (m *Middleware) buildBaseSpec() map[string]any {
 			if r.Path == m.Cfg.JSONPath || r.Path == m.Cfg.DocsPath {
 				continue
 			}
-			if r.Path == "" || r.Method == "" || !allow[strings.ToUpper(r.Method)] {
+			if r.Path == "" || r.Method == "" {
+				continue
+			}
+			upper := strings.ToUpper(r.Method)
+			if !allow[upper] || m.isMethodExcluded(upper) {
 				continue
 			}
 			list = append(list, kv{
@@ -1437,4 +1454,11 @@ func mergeHeaderObjects(dst, src map[string]HeaderObject) map[string]HeaderObjec
 		out[k] = v
 	}
 	return out
+}
+
+func (m *Middleware) isMethodExcluded(method string) bool {
+	if len(m.excludeMethod) == 0 {
+		return false
+	}
+	return m.excludeMethod[strings.ToUpper(method)]
 }
